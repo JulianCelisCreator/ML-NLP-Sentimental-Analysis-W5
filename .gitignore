@@ -1,0 +1,28 @@
+## Data: silver and splits come from Workshop #1, CLS vectors from Workshop #4 (see README)
+data/
+
+## Checkpoints: only the deliverables are versioned. model_best.pt (Workshop #2 RoBERTa,
+## 499 MB) lives in the Workshop #2 repo via Git LFS; scaler.pkl is refitted on train
+## when missing; ablation runs (gan_*_<tag>_best.pt) are not deliverables.
+checkpoints/*
+!checkpoints/gan_vanilla_best.pt
+!checkpoints/gan_wgan_best.pt
+!checkpoints/gan_vanilla_cond_best.pt
+!checkpoints/gan_wgan_cond_best.pt
+!checkpoints/w2_head.pt
+
+## Raw console output of the training runs (the per-epoch logs are in runs/workshop5/*.csv)
+runs/workshop5/stdout/
+
+## Python and tooling
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+.vscode/
+.DS_Store
+.env*
+
+## Claude Code config — local only
+.claude/
+CLAUDE.md

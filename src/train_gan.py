@@ -21,6 +21,8 @@ steps per generator step, Adam 1e-4 (β = 0, 0.9), generator loss −E[C(G(z))].
     python src/train_gan.py --model wgan
     python src/train_gan.py --model wgan --conditional          # cGAN (optional part)
     python src/train_gan.py --model vanilla --real-label 1.0 --d-lr 8e-4 --tag unstable
+    python src/train_gan.py --model vanilla --minibatch-std --tag mbstd   # mode-collapse fixes
+    python src/train_gan.py --model vanilla --d-dropout 0 --d-lr 4e-4 --tag strongd
 """
 
 from __future__ import annotations
@@ -99,6 +101,8 @@ def train(config: GANConfig, tag: str = "", d_lr: float | None = None) -> dict:
             real, labels = X[index], (y[index] if config.conditional else None)
             z = torch.randn(len(index), config.z_dim)
             step += 1
+            sigma = config.instance_noise * (1 - (epoch - 1) / config.epochs)
+            noisy = (lambda v: v + sigma * torch.randn_like(v)) if sigma > 0 else (lambda v: v)
             if wgan:
                 # ---- critic step (every batch)
                 fake = generator(z, labels).detach()
@@ -123,8 +127,8 @@ def train(config: GANConfig, tag: str = "", d_lr: float | None = None) -> dict:
             else:
                 fake = generator(z, labels)
                 # ---- discriminator step: real → real_label (0.9), fake → 0
-                logit_real = discriminator(real, labels)
-                logit_fake = discriminator(fake.detach(), labels)
+                logit_real = discriminator(noisy(real), labels)
+                logit_fake = discriminator(noisy(fake.detach()), labels)
                 d_loss = (bce(logit_real, torch.full_like(logit_real, config.real_label))
                           + bce(logit_fake, torch.zeros_like(logit_fake)))
                 opt_d.zero_grad()
@@ -137,7 +141,7 @@ def train(config: GANConfig, tag: str = "", d_lr: float | None = None) -> dict:
                 log["acc_real"].append((p_real > 0.5).float().mean().item())
                 log["acc_fake"].append((p_fake < 0.5).float().mean().item())
                 # ---- generator step, non-saturating: maximise log D(G(z))
-                logit = discriminator(fake, labels)
+                logit = discriminator(noisy(fake), labels)
                 g_loss = bce(logit, torch.ones_like(logit))
                 opt_g.zero_grad()
                 g_loss.backward()
@@ -204,13 +208,21 @@ def main() -> int:
     parser.add_argument("--real-label", type=float, default=GANConfig.real_label,
                         help="label of real vectors for the vanilla D (1.0 = no smoothing)")
     parser.add_argument("--d-lr", type=float, default=None, help="override the D/critic learning rate")
+    parser.add_argument("--d-dropout", type=float, default=GANConfig.d_dropout,
+                        help="dropout in the vanilla discriminator (0 = a stronger D)")
+    parser.add_argument("--instance-noise", type=float, default=0.0,
+                        help="std of the noise added to D's inputs, annealed to 0 (vanilla)")
+    parser.add_argument("--minibatch-std", action="store_true",
+                        help="minibatch standard-deviation feature in D (vanilla)")
     parser.add_argument("--seed", type=int, default=GANConfig.seed)
     parser.add_argument("--tag", default="", help="suffix for an ablation run (keeps the main checkpoints)")
     parser.add_argument("--threads", type=int, default=3)
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
     config = GANConfig(model=args.model, conditional=args.conditional, epochs=args.epochs,
-                       batch_size=args.batch_size, real_label=args.real_label, seed=args.seed)
+                       batch_size=args.batch_size, real_label=args.real_label, seed=args.seed,
+                       instance_noise=args.instance_noise, minibatch_std=args.minibatch_std,
+                       d_dropout=args.d_dropout)
     train(config, tag=args.tag, d_lr=args.d_lr)
     return 0
 

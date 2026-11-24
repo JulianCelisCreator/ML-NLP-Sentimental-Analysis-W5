@@ -10,6 +10,8 @@ LeakyReLU(0.2) in the discriminator, no BatchNorm in the discriminator's input l
 * Discriminator 768 → 512 → 256 → 1 logit. The Sigmoid is fused into the loss
                 (BCEWithLogitsLoss = Sigmoid + BCE, numerically stable); `probability()`
                 applies it explicitly.
+  Optional mitigations of mode collapse (ablations): a minibatch-standard-deviation feature
+                  before the last layer, and instance noise (in src/train_gan.py).
 * Critic        same layers, no Sigmoid: a real-valued score (WGAN). LayerNorm instead of
                 dropout/BatchNorm, because the gradient penalty is computed per sample and
                 BatchNorm would mix the samples of a batch.
@@ -52,9 +54,9 @@ class Discriminator(nn.Module):
 
     def __init__(self, in_dim: int = EMB_DIM, hidden: tuple[int, ...] = (512, 256),
                  num_classes: int = 0, label_dim: int = 16, critic: bool = False,
-                 dropout: float = 0.3):
+                 dropout: float = 0.3, minibatch_std: bool = False):
         super().__init__()
-        self.critic = critic
+        self.critic, self.minibatch_std = critic, minibatch_std
         self.label_embedding = nn.Embedding(num_classes, label_dim) if num_classes else None
         layers, width = [], in_dim + (label_dim if num_classes else 0)
         for size in hidden:
@@ -65,14 +67,21 @@ class Discriminator(nn.Module):
             if not critic:
                 layers.append(nn.Dropout(dropout))
             width = size
-        layers.append(nn.Linear(width, 1))
+        layers.append(nn.Linear(width + (1 if minibatch_std else 0), 1))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor, labels: torch.Tensor | None = None) -> torch.Tensor:
         """Logit (discriminator) or score (critic), shape (batch,)."""
         if self.label_embedding is not None:
             x = torch.cat([x, self.label_embedding(labels)], dim=1)
-        return self.net(x).squeeze(1)
+        if not self.minibatch_std:
+            return self.net(x).squeeze(1)
+        # Minibatch discrimination (minibatch standard deviation, Karras et al. 2018): the last
+        # layer also sees how varied the whole batch is, so a collapsed generator, whose
+        # batches are all alike, is easy to spot and gets pushed back towards diversity.
+        h = self.net[:-1](x)
+        spread = h.std(dim=0, unbiased=False).mean().expand(h.size(0), 1)
+        return self.net[-1](torch.cat([h, spread], dim=1)).squeeze(1)
 
     def probability(self, x: torch.Tensor, labels: torch.Tensor | None = None) -> torch.Tensor:
         """D(x) ∈ (0, 1): the Sigmoid output of the vanilla discriminator."""
@@ -86,7 +95,7 @@ def build(config: GANConfig) -> tuple[Generator, Discriminator]:
                           label_dim=config.label_dim)
     discriminator = Discriminator(hidden=config.d_hidden, num_classes=num_classes,
                                   label_dim=config.label_dim, critic=config.model == "wgan",
-                                  dropout=config.d_dropout)
+                                  dropout=config.d_dropout, minibatch_std=config.minibatch_std)
     return generator, discriminator
 
 

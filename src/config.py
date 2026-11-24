@@ -63,6 +63,11 @@ class GANConfig:
     betas: tuple[float, float] = (0.5, 0.999)
     real_label: float = 0.9
     d_dropout: float = 0.3
+    # Mode-collapse mitigations, off in the main runs (ablations in the report):
+    # instance noise — Gaussian noise of std `instance_noise` added to D's inputs (real and
+    # fake), annealed linearly to 0 over training; minibatch standard deviation feature in D.
+    instance_noise: float = 0.0
+    minibatch_std: bool = False
     # WGAN-GP, as in Gulrajani et al. (2017): 5 critic steps per G step, lambda = 10,
     # Adam 1e-4 with betas (0, 0.9).
     n_critic: int = 5

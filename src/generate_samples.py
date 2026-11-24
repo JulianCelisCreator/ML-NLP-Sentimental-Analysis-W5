@@ -172,7 +172,7 @@ def tile_grids(data) -> None:
     sources = {"real": train[rng.choice(len(train), 64, replace=False)]}
     for name in available(("vanilla", "wgan")):
         sources[name], _ = generate(name, 64, data["train"]["y"], seed=7)
-    fig, axes = plt.subplots(1, len(sources), figsize=(6 * len(sources), 6.4))
+    fig, axes = plt.subplots(1, len(sources), figsize=(5.4 * len(sources), 4.9), layout="constrained")
     for ax, (name, Z) in zip(axes, sources.items()):
         tiles = np.clip(Z, -3, 3).reshape(8, 8, 24, 32)
         canvas = np.full((8 * 25 - 1, 8 * 33 - 1), np.nan)
@@ -182,10 +182,10 @@ def tile_grids(data) -> None:
         image = ax.imshow(canvas, cmap="RdBu_r", vmin=-3, vmax=3)
         ax.set_title(f"{TITLES[name]} — 64 vectors", fontsize=12)
         ax.axis("off")
-    fig.colorbar(image, ax=axes, shrink=0.6, label="standardised value (clipped to ±3)")
+    fig.colorbar(image, ax=axes, shrink=0.8, label="standardised value (clipped to ±3)")
     fig.suptitle("8 × 8 sample grids: each tile is one 768-d vector drawn as a 24 × 32 heatmap",
                  fontsize=12)
-    fig.savefig(FIGURES_DIR / "sample_grids.png", dpi=160, bbox_inches="tight")
+    fig.savefig(FIGURES_DIR / "sample_grids.png", dpi=160)
     plt.close(fig)
 
 
@@ -207,10 +207,11 @@ def review_grids(data, scaler, head) -> None:
         query = torch.nn.functional.normalize(torch.from_numpy(Z), dim=1)
         similarity, nearest = (query @ train_unit.T).max(1)
         predicted = predict_proba(head, to_raw(scaler, Z)).argmax(1)
-        lines += [f"## {TITLES[name]}", "", "| # | Predicted | Cosine | Nearest training review (truncated) |",
+        lines += [f"## {'Real (validation)' if name == 'real' else TITLES[name]}", "", "| # | Predicted | Cosine | Nearest training review (truncated) |",
                   "| --- | --- | --- | --- |"]
         ax.axis("off")
-        ax.set_title(f"{TITLES[name]} — nearest real review to 16 vectors", fontsize=13, loc="left")
+        title = "Real (validation)" if name == "real" else TITLES[name]
+        ax.set_title(f"{title} — nearest real review to 16 vectors", fontsize=13, loc="left")
         for k in range(16):
             text = str(texts.iloc[int(data["train"]["index"][int(nearest[k])])]).replace("\n", " ")
             label = LABELS[predicted[k]]
@@ -218,9 +219,9 @@ def review_grids(data, scaler, head) -> None:
             row, col = divmod(k, 4)
             snippet = "\n".join(textwrap.wrap(text[:150] + "…", 42)[:4])
             ax.text(col / 4 + 0.005, 1 - row / 4 - 0.02, f"{label} · cos {similarity[k]:.2f}",
-                    transform=ax.transAxes, fontsize=9, fontweight="bold", color=CLASS_COLORS[label],
+                    transform=ax.transAxes, parse_math=False, fontsize=9, fontweight="bold", color=CLASS_COLORS[label],
                     va="top")
-            ax.text(col / 4 + 0.005, 1 - row / 4 - 0.065, snippet, transform=ax.transAxes,
+            ax.text(col / 4 + 0.005, 1 - row / 4 - 0.065, snippet, transform=ax.transAxes, parse_math=False,
                     fontsize=8, va="top", color="#2b2b2b")
         lines.append("")
     fig.savefig(FIGURES_DIR / "review_grids.png", dpi=130, bbox_inches="tight")

@@ -10,14 +10,15 @@ split (the GANs never see it; validation is used for checkpoint selection). Metr
 * Precision and recall (Kynkäänniemi et al., 2019, k = 5): the share of generated vectors
   inside the real data's k-NN manifold (fidelity) and of real vectors inside the generated
   one (coverage — what mode collapse destroys).
-* Diversity: mean pairwise distance, generated vs. real.
+* Diversity: mean pairwise distance, generated vs. real; effective dimension (participation
+  ratio of the covariance spectrum), which exposes samples spread over too few directions.
 * Memorisation: distance from each vector to its nearest training vector, generated vs.
   real test reviews (a ratio well below 1 would mean G copies its training set).
 * Class mix under Workshop #2's head, and for the cGANs the label fidelity: macro-F1 of the
   head against the label each vector was generated for.
 
-Two reference rows frame the numbers: "real" (10,000 training vectors, the best any
-generator can do) and "gaussian" (a multivariate normal fitted to the training vectors —
+Two reference rows frame the numbers: "real" (the 6,395 held-out validation vectors: the
+score of genuine unseen reviews, the best any generator can do) and "gaussian" (a multivariate normal fitted to the training vectors —
 it matches the two moments FD looks at, so it shows what FD alone cannot see).
 
     python src/evaluate_gan.py
@@ -36,6 +37,8 @@ from config import CHECKPOINT_DIR, LABELS, RANDOM_STATE, RUNS_DIR
 from data import load_data, load_w2_head, predict_proba, to_raw
 
 MODELS = ("vanilla", "wgan", "vanilla_cond", "wgan_cond")
+# Failure-mode ablations of the vanilla GAN (src/train_gan.py --tag …), evaluated the same way.
+ABLATIONS = ("vanilla_mbstd", "vanilla_noise", "vanilla_strongd", "vanilla_unstable")
 N_EVAL = 10_000
 
 
@@ -94,6 +97,14 @@ def mean_pairwise_distance(x: np.ndarray, n: int = 2000, seed: int = RANDOM_STAT
     return float(d.sum() / (len(t) * (len(t) - 1)))
 
 
+def effective_dimension(x: np.ndarray) -> float:
+    """Participation ratio (Σλ)² / Σλ² of the covariance spectrum: how many directions the
+    vectors really spread over. A generator can match the overall spread (diversity) yet put
+    its samples on a thin, low-dimensional sheet — a partial collapse that recall exposes."""
+    eigenvalues = np.clip(linalg.eigvalsh(np.cov(x.astype(np.float64), rowvar=False)), 0, None)
+    return float(eigenvalues.sum() ** 2 / (eigenvalues ** 2).sum())
+
+
 def nearest_train_distance(x: np.ndarray, train: np.ndarray, n: int = 2000,
                            seed: int = RANDOM_STATE) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -137,6 +148,7 @@ def describe(Z: np.ndarray, data: dict, scaler, head, labels=None) -> dict:
         "classifier_score": classifier_score(probabilities),
         "precision": precision, "recall": recall,
         "diversity": mean_pairwise_distance(Z),
+        "effective_dimension": effective_dimension(Z),
         "nearest_train_median": float(np.median(nn_fake)),
         "class_mix": {label: float((predictions == i).mean()) for i, label in enumerate(LABELS)},
         "mean_confidence": float(probabilities.max(1).mean()),
@@ -155,15 +167,14 @@ def main() -> int:
     rng = np.random.default_rng(RANDOM_STATE)
 
     rows = {}
-    real_index = rng.choice(len(data["train"]["Z"]), N_EVAL, replace=False)
-    real = data["train"]["Z"][real_index]
-    rows["real"] = describe(real, data, scaler, head, labels=y_train[real_index])
+    # Held-out real reviews (validation: never trained on, not the test reference itself).
+    rows["real"] = describe(data["validation"]["Z"], data, scaler, head, labels=data["validation"]["y"])
 
     mean, cov = data["train"]["Z"].mean(0), np.cov(data["train"]["Z"], rowvar=False)
     gaussian = rng.multivariate_normal(mean, cov, size=N_EVAL, method="cholesky").astype(np.float32)
     rows["gaussian"] = describe(gaussian, data, scaler, head)
 
-    for name in MODELS:
+    for name in MODELS + ABLATIONS:
         if not (CHECKPOINT_DIR / f"gan_{name}_best.pt").exists():
             print(f"  skip {name}: no checkpoint")
             continue
@@ -174,19 +185,21 @@ def main() -> int:
     real_test_nn = nearest_train_distance(data["test"]["Z"], data["train"]["Z"])
     reference = {"real_test_nearest_train_median": float(np.median(real_test_nn)),
                  "real_test_diversity": mean_pairwise_distance(data["test"]["Z"]),
+                 "real_test_effective_dimension": effective_dimension(data["test"]["Z"]),
                  "real_train_class_mix": dict(zip(LABELS, class_mix(y_train).tolist()))}
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     (RUNS_DIR / "evaluation.json").write_text(json.dumps({"n_samples": N_EVAL, "reference": reference,
                                                           "models": rows}, indent=2), encoding="utf-8")
 
-    header = ("| Source | FD ↓ | Classifier score | Precision ↑ | Recall ↑ | Diversity | "
+    header = ("| Source | FD ↓ | Classifier score | Precision ↑ | Recall ↑ | Diversity | Eff. dim | "
               "NN-train median | % neg / neu / pos | Label F1 |")
-    lines = [header, "| --- " * 9 + "|"]
+    lines = [header, "| --- " * 10 + "|"]
     for name, r in rows.items():
         mix = " / ".join(f"{100 * r['class_mix'][label]:.1f}" for label in LABELS)
         fidelity = f"{r['label_fidelity_macro_f1']:.3f}" if "label_fidelity_macro_f1" in r else "—"
         lines.append(f"| {name} | {r['frechet_distance']:.1f} | {r['classifier_score']:.3f} | "
                      f"{r['precision']:.3f} | {r['recall']:.3f} | {r['diversity']:.2f} | "
+                     f"{r['effective_dimension']:.1f} | "
                      f"{r['nearest_train_median']:.2f} | {mix} | {fidelity} |")
     lines.append("")
     lines.append(f"Real test reviews: diversity {reference['real_test_diversity']:.2f}, "
